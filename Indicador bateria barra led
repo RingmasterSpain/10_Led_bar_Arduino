@@ -1,0 +1,312 @@
+/*  ==================================================================
+
+  Sketch control de batería, pensado para su funcionamiento en un Atmetl 328P
+  Activa una barra de LEDS según el voltaje y tipo batería (Divisor voltaje)
+  Azul sobrecarga, Verde 50-90%, amarillo del 20 al 40%,
+  rojo 10 al 20% y rojo parpadeante por debajo del 5%
+  
+  Autor: David Losada, basado en trabajos previos de otros autores:
+  Parte de código de la referencia rápida del Digispark: http://digistump.com/wiki/digispark/quickref
+    
+  Version: 0.5 bajo licencia GPLv3
+  Fecha: noviembre 2017
+  Proyecto Kid's car kit Bilbao
+
+  ==================================================================   */
+
+#include <EEPROMex.h> //Librería para manejo de la EEPROM
+
+//Librerías para dormir al procesador y ahorrar energía cuando no hace nada
+//from https://bigdanzblog.wordpress.com/2014/08/10/attiny85-wake-from-sleep-on-pin-state-change-code-example/
+#include <avr/sleep.h>
+#include <avr/power.h>
+#include <avr/wdt.h>
+#include <avr/io.h>
+#include <avr/interrupt.h> //También para manejar la interrupción por sensor HALL kms/H
+
+//******************* A CAMBIAR SEGÚN TU CONFIGURACIÓN ********************************
+
+//Relación de voltaje y estado de carga de la batería; se puede agregar para cualquier tipo de batería, siempre teniendo en cuenta que estaremos comprobando sólo una celda de hasta 5V
+//por lo que es imprescindible utilizar un BMS de equilibrado de celdas en la carga para evitar problemas con las celdas no monitorizadas
+//Descomentamos el tipo de batería que queramos utilizar
+//(VALORES %: 1%,8%,20%,30%,40%,90%,100%)
+//const double mVoltCarga[7]={2.8,3.10,3.17,3.198,3.22,3.4,3.6}; //tabla de relación de voltajes y carga de LIFEPO  (recomendado calibrar (más abajo se indica), por la pequeña diferencia entre estados)
+//const double mVoltCarga[7]={3,3.2,3.3,3.6,3.65,4.05,4.2}; //tabla de relación de voltajes y carga de LiCo y LiPo
+
+//(VALORES BARRA 10 LEDS %: 5%,15%,30%,40%,50%,60%,70%,80%,90%,100%) ; no es progresivo, sobre todo en LiFePo4, por eso la conveniencia de valores según porcentajes.
+const double mVoltCarga[10]={2.7,3.1,3.16,3.19,3.22,3.25,3.29,3.33,3.38,3.5}; //tabla de relación de voltajes y carga de LIFEPO  (recomendado calibrar (más abajo se indica), por la pequeña diferencia entre estados)
+
+const double ajusteVolt=0; //Aquí se calibra el valor del voltaje que obtenemos, sumando o restando valor
+
+//Definición pines analógicos monitorización batería
+//En el ATTiny85 las entradas son (1)=P2; (2)=P4; (3)=P3; (0)=P5 y pines PWM P0, P1 y P4
+
+
+//*************************************************************************************
+
+//Definimos pines a usar
+//(Con #define no se consume memoria)
+//#define voltajePIN     A2 //Entrada de voltaje
+//#define led1PIN        2 //Pin para activar LED de valor 0-5%
+//#define led2PIN        3 //Pin para activar LED de valor 15%
+//#define led3PIN        4 //Pin para activar LED de valor 30%
+//#define led4PIN        5 //Pin para activar LED de valor 40%
+//#define led5PIN        6 //Pin para activar LED de valor 50%
+//#define led6PIN        7 //Pin para activar LED de valor 60%
+//#define led7PIN        8 //Pin para activar LED de valor 70%
+//#define led8PIN        9 //Pin para activar LED de valor 80%
+//#define led9PIN        10 //Pin para activar LED de valor 90%
+//#define motorPIN       11 //Pin regulación motor PWM
+//#define led10PIN       12 //Pin para activar LED de valor 100%
+
+//Otra forma de definir los pines más rápida pero consumiendo memoria
+int ledPins[] = {
+  2, 3, 4, 5, 6, 7, 8, 9, 10, 12
+};   // array de números de pin a los que conectamos los LED
+#define motorPIN       11 //Pin regulación motor PWM
+#define bateriaPIN     A1 //Entrada de voltaje con divisor
+#define cargaPIN       A2 //Entrada de voltaje con divisor
+const int ledCont = 10;   // Número de Leds de la barra
+int ledLevel= 0;          //Número de leds a encender
+
+unsigned long millisInicio=0; //Para comprobar paso de horas
+
+//Para voltaje de batería
+double voltaje[3]={0,0,0}; //Valores obtenidos muestras
+double value=0; //Voltaje obtenido
+
+//Obtenemos voltaje de carga transformador
+double voltajeCarga=0; //Valor de voltaje de carga
+
+void setup()   { 
+
+//Resetea la EEPROM la primera vez que la usamos
+EEPROM.setMemPool(0,512); //Establecemos inicio y tamaño de EEPROM de la tarjeta utilizada
+EEPROM.setMaxAllowedWrites(128); //Mínimo para que pueda hacerse el primer borrado completo
+//rellenamos de 0 los datos de EEPROM
+if (EEPROM.readLong(508)!=4011983) { //En ese punto, preferiblemente al final, guardo un valor para saber si ya la he reseteado
+  for(int i=0; i<500; i=i+4) { //Ajustar el valor según el tamaño de la (EEPROM)-8
+     EEPROM.update(i,0);
+      }
+  EEPROM.update(508,4011983); //Almacenamos un número indicativo de que ya se ha inicializado en la última posición
+  //Serial.println("Borrado de EEPROM terminado"); //sólo debería aparecer 1 vez
+}
+
+//Actualizamos contador de encendidos
+EEPROM.update(11,EEPROM.readLong(11)+1);
+
+  //Líneas de configuración del WatchDog Timer para dormir al procesador
+  /*** Setup the WDT ***/
+
+  /* Clear the reset flag. */
+  MCUSR &= ~(1 << WDRF);
+
+  /* In order to change WDE or the prescaler, we need to
+     set WDCE (This will allow updates for 4 clock cycles).
+  */
+  WDTCSR |= (1 << WDCE) | (1 << WDE);
+
+  /* set new watchdog timeout prescaler value */
+  //WDP3 - WDP2 - WPD1 - WDP0 - time
+  // 0      0      0      0      16 ms
+  // 0      0      0      1      32 ms
+  // 0      0      1      0      64 ms
+  // 0      0      1      1      0.125 s
+  // 0      1      0      0      0.25 s
+  // 0      1      0      1      0.5 s
+  // 0      1      1      0      1.0 s
+  // 0      1      1      1      2.0 s
+  // 1      0      0      0      4.0 s
+  // 1      0      0      1      8.0 s
+
+  WDTCSR = 1 << WDP2 | 1 << WDP1; /* 1.0 seconds */
+  //WDTCSR = 1<<WDP2 | 1<<WDP1 | 1<<WDP0; /* 2.0 seconds */
+  //WDTCSR = 1<<WDP3; /* 4.0 seconds */
+  //WDTCSR = 1<<WDP0 | 1<<WDP3; /* 8.0 seconds */
+
+  /* Enable the WD interrupt (note no reset). */
+  WDTCSR |= _BV(WDIE);
+
+//Definir pines
+//You need not set pin mode for analogRead - though if you have set the pin to
+//output and later want to read from it then you need to set pinMode(0,INPUT);
+//where 0 is the physical pin number not the analog input number.
+//pinMode(PIN, OUTPUT);
+pinMode(bateriaPIN,INPUT); //Entrada de voltaje
+pinMode(cargaPIN,INPUT); //Divisor de voltaje en cargador (añadir diodos)
+pinMode(motorPIN,OUTPUT); //Pin regulación motor PWM
+// Establecemos todos los pines LED a output:
+  for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+    pinMode(ledPins[thisLed], OUTPUT);
+  }
+
+millisInicio=millis();
+//Encendemos los LEDs para indicar puesta en marcha y comprobar que funcionan
+//Eliminar esto si necesitamos más memoria para el programa
+//Encendemos todos un momento
+for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+  digitalWrite(ledPins[thisLed], HIGH);
+  }
+delay(300);
+//Apaga todos
+for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+  digitalWrite(ledPins[thisLed], LOW);
+  }
+delay(200);
+//Enciende todos con pausas
+for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+  digitalWrite(ledPins[thisLed], HIGH);
+  delay(100);
+  }
+//Apaga todos
+for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+  digitalWrite(ledPins[thisLed], LOW);
+  }
+//millisInicio=millis();
+//Serial.begin(9600);
+//Serial.println("Iniciamos programa");
+
+}
+
+void loop() {
+
+// CÓDIGO OBTENCIÓN VOLTAJE **************************
+  //Recoge 3 muestras de voltaje batería para sacar medias; el condensador se encarga de mantener un valor fijo
+    //Serial.println("Leemos valores");
+    for (int x = 0; x < 3; x++) {
+      //coge el voltaje en milivoltios, pasamos a voltios con la rutina doubleMap
+      voltaje[x] = doubleMap(analogRead(bateriaPIN), 0, 1023, 0, 5); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+      delay(15); // espera entre lecturas
+    }
+    //Ordenamos para descartar bajo y alto y eliminar posibles errores; un condensador lo estabiliza bastante
+    for (int x = 0; x < 3; x++) {
+      for (int y = 0; y < 3; y++) {
+        if (voltaje[y] < voltaje[y + 1]) {
+          value = voltaje[y];
+          voltaje[y] = voltaje[y + 1];
+          voltaje[y + 1] = value;
+        }
+      }
+    }
+
+    //Obtenemos voltaje en mV (milliVoltios)
+    value = ((double)voltaje[1]+ajusteVolt);
+    //value = 3.21; //for debugging
+
+//Voltaje de carga
+voltajeCarga = doubleMap(analogRead(cargaPIN), 0, 1023, 0, 5); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+
+//Establecemos el número de elementos a iluminar
+ledLevel=0;
+if (value>.5) {
+  for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+    if (value>mVoltCarga[thisLed]) {
+      ledLevel=thisLed+1;
+    }
+  }
+}
+
+  // Encendemos los LED correspondientes:
+  for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+    // Si el índice del array es menor que el número de leds a encender,
+    // ponemos el pin de ese elemento en ON:
+    if (thisLed < ledLevel) {
+      digitalWrite(ledPins[thisLed], HIGH);
+    }
+    // apagamos los led por encima de ése:
+    else {
+      digitalWrite(ledPins[thisLed], LOW);
+    }
+  }
+
+//Si se está cargando la batería, encendemos secuencialmente los apagados
+//Mientras esté cargando, del lado previo al diodo tendremos voltaje más alto (el diodo tiene cierta resistencia).
+if (voltajeCarga>value) {
+for (int thisLed = ledLevel; thisLed < ledCont; thisLed++) {
+  digitalWrite(ledPins[thisLed], HIGH);
+  delay(200);
+  digitalWrite(ledPins[thisLed], LOW);
+  }
+}
+  
+  
+//Comprobamos si millis se ha desbordado (tras 50 días)
+if (millisInicio>millis()) {
+  millisInicio=millis();
+}
+
+//Guardamos datos estadísticos de uso de la batería en EEPROM
+if ((millis()-millisInicio)>3600000) { //Ha pasado una hora
+  millisInicio=millis(); //Reseteamos contador
+  //Horas funcionamiento Arduino (batería activada)
+  EEPROM.update(0,EEPROM.readLong(0)+1); //Añadimos una hora al contador 
+  //Contador de horas recargando baterías (servirá para sacar las recargas totales)
+  if (voltajeCarga>value) {
+    EEPROM.update(7,EEPROM.readLong(7)+1); //Añadimos una hora al contador 
+  }
+  //Voltaje máximo histórico
+  if (EEPROM.readLong(15)<value) { //Comprobamos valor máximo y actualizamos
+    EEPROM.update(15,value);
+  }
+  //Voltaje mínimo histórico
+  if (EEPROM.readLong(19)>value)  { //Comprobamos valor mínimo y actualizamos
+    EEPROM.update(19,value);
+  }
+  //De la posición EEPROM 50 a 90 contabilizamos horas en cada porcentaje de carga
+  EEPROM.update(50+(ledLevel*4),EEPROM.readLong(50+(ledLevel*4)));
+}
+
+enterSleep(); //Paramos 1 seg.; ahorramos batería ya que está el 99% del tiempo "dormido"
+        
+}
+
+// *************** RUTINAS LECTURA VOLTAJE ***************
+double doubleMap(double x, double in_min, double in_max, double out_min, double out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+
+//Code from http://donalmorrissey.blogspot.com.es/2010/04/sleeping-arduino-part-5-wake-up-via.html
+/***************************************************
+    Name:        ISR(WDT_vect)
+
+    Returns:     Nothing.
+
+    Parameters:  None.
+
+    Description: Watchdog Interrupt Service. This
+                 is executed when watchdog timed out.
+
+ ***************************************************/
+ISR(WDT_vect)
+{
+  //Aquí el código que queremos se ejecute cuando el watchdog "despierta" al procesador
+
+}
+
+
+/***************************************************
+    Name:        enterSleep
+
+    Returns:     Nothing.
+
+    Parameters:  None.
+
+    Description: Enters the arduino into sleep mode.
+
+ ***************************************************/
+void enterSleep(void)
+{
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);   /* EDIT: could also use SLEEP_MODE_PWR_SAVE for less power consumption. */
+  sleep_enable();
+
+  /* Now enter sleep mode. */
+  sleep_mode();
+
+  /* The program will continue from here after the WDT timeout*/
+  sleep_disable(); /* First thing to do is disable sleep. */
+
+  /* Re-enable the peripherals. */
+  power_all_enable();
+}
