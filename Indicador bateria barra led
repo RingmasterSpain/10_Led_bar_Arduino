@@ -9,6 +9,9 @@
 
   La barra LED utilizada es de colores 2 rojos, 3 amarillos y 5 verdes
   Utilizo 3 resistencias; para los rojos de 1Kohm, amarillos de 680K y verdes 220 ohms.
+  Se utiliza un divisor de voltaje de hasta 55V (para una batería de 37V pico LiFePo).
+  https://startingelectronics.org/articles/arduino/measuring-voltage-with-arduino/
+  
   
   Autor: David Losada, basado en trabajos previos de otros autores:
   Parte de código de la referencia rápida del Digispark: http://digistump.com/wiki/digispark/quickref
@@ -34,12 +37,12 @@
 //Relación de voltaje y estado de carga de la batería; se puede agregar para cualquier tipo de batería, siempre teniendo en cuenta que estaremos comprobando sólo una celda de hasta 5V
 //por lo que es imprescindible utilizar un BMS de equilibrado de celdas en la carga para evitar problemas con las celdas no monitorizadas
 //Descomentamos el tipo de batería que queramos utilizar
-//(VALORES %: 1%,8%,20%,30%,40%,90%,100%)
+//(VALORES %: 1%,10%,20%,30%,40%,90%,100%)
 //const double mVoltCarga[7]={2.8,3.10,3.17,3.198,3.22,3.4,3.6}; //tabla de relación de voltajes y carga de LIFEPO  (recomendado calibrar (más abajo se indica), por la pequeña diferencia entre estados)
 //const double mVoltCarga[7]={3,3.2,3.3,3.6,3.65,4.05,4.2}; //tabla de relación de voltajes y carga de LiCo y LiPo
 
-//(VALORES BARRA 10 LEDS %: 1%,10%,30%,40%,50%,60%,70%,80%,90%,100%) ; no es progresivo, sobre todo en LiFePo4, por eso la conveniencia de valores según porcentajes.
-const double mVoltCarga[10]={1,3.05,3.16,3.19,3.22,3.25,3.29,3.33,3.38,3.5}; //tabla de relación de voltajes y carga de LIFEPO  (recomendado calibrar (más abajo se indica), por la pequeña diferencia entre estados)
+//(VALORES BARRA 10 LEDS %: 0%,15%,30%,40%,50%,60%,70%,80%,90%,100%) ; no es progresivo, sobre todo en LiFePo4, por eso la conveniencia de valores según porcentajes.
+const double mVoltCarga[10]={1,3.16,3.198,3.216,3.237,3.24,3.25,3.27,3.283,3.4}; //tabla de relación de voltajes y carga de LIFEPO  (recomendado calibrar (más abajo se indica), por la pequeña diferencia entre estados)
 
 const double ajusteVolt=-0.23; //Aquí se calibra el valor del voltaje que obtenemos por el Arduino, sumando o restando valor
 
@@ -63,7 +66,7 @@ const double ajusteVolt=-0.23; //Aquí se calibra el valor del voltaje que obten
 int ledPins[] = {
   11, 10, 9, 8, 7, 6, 5, 4, 3, 2
 };   // array de números de pin a los que conectamos los LED
-#define motorPIN       11 //Pin regulación motor PWM
+//#define motorPIN       11 //Pin regulación motor PWM
 #define bateriaPIN     A1 //Entrada de voltaje con divisor
 #define cargaPIN       A2 //Entrada de voltaje con divisor
 const int ledCont = 10;   //Número de Leds de la barra
@@ -75,8 +78,8 @@ int posLed = 0;           //Para cuando no tenemos valor LED, indicar que está 
 unsigned long millisInicio=0; //Para comprobar paso de horas
 
 //Para voltaje de batería
-double voltaje[3]={0,0,0}; //Valores obtenidos muestras
-double value=0; //Voltaje obtenido
+double voltajeMuestras[3]={0,0,0}; //Valores obtenidos muestras
+double voltaje=0; //Voltaje obtenido
 boolean voltajePrevio=false;
 
 //Obtenemos voltaje de carga transformador
@@ -110,7 +113,7 @@ EEPROM.update(11,EEPROM.readLong(11)+1);
   */
   WDTCSR |= (1 << WDCE) | (1 << WDE);
 
-  /* set new watchdog timeout prescaler value */
+  /* set new watchdog timeout prescaler voltaje */
   //WDP3 - WDP2 - WPD1 - WDP0 - time
   // 0      0      0      0      16 ms
   // 0      0      0      1      32 ms
@@ -138,7 +141,7 @@ EEPROM.update(11,EEPROM.readLong(11)+1);
 //pinMode(PIN, OUTPUT);
 pinMode(bateriaPIN,INPUT); //Entrada de voltaje
 pinMode(cargaPIN,INPUT); //Divisor de voltaje en cargador (añadir diodos)
-pinMode(motorPIN,OUTPUT); //Pin regulación motor PWM
+//pinMode(motorPIN,OUTPUT); //Pin regulación motor PWM
 // Establecemos todos los pines LED a output:
   for (int thisLed = 0; thisLed < ledCont; thisLed++) {
     pinMode(ledPins[thisLed], OUTPUT);
@@ -170,33 +173,40 @@ void loop() {
     //Serial.println("Leemos valores");
     for (int x = 0; x < 3; x++) {
       //coge el voltaje en milivoltios, pasamos a voltios con la rutina doubleMap
-      voltaje[x] = doubleMap(analogRead(bateriaPIN), 0, 1023, 0, 5); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+      voltajeMuestras[x] = doubleMap(analogRead(bateriaPIN), 0, 1023, 0, 5); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
       delay(15); // espera entre lecturas
     }
     //Ordenamos para descartar bajo y alto y eliminar posibles errores; un condensador lo estabiliza bastante
     for (int x = 0; x < 3; x++) {
       for (int y = 0; y < 3; y++) {
-        if (voltaje[y] < voltaje[y + 1]) {
-          value = voltaje[y];
-          voltaje[y] = voltaje[y + 1];
-          voltaje[y + 1] = value;
+        if (voltajeMuestras[y] < voltajeMuestras[y + 1]) {
+          voltaje = voltajeMuestras[y];
+          voltajeMuestras[y] = voltajeMuestras[y + 1];
+          voltajeMuestras[y + 1] = voltaje;
         }
       }
     }
 
     //Obtenemos voltaje en mV (milliVoltios)
-    value = ((double)voltaje[1]+ajusteVolt);
-    //value = 3.21; //for debugging
+    voltaje = ((double)voltajeMuestras[1]+ajusteVolt);
+    if (voltaje<0) {
+      voltaje=0.9;
+      }
+    //voltaje = 3.21; //for debugging
 
 //Voltaje de carga
-voltajeCarga = doubleMap(analogRead(cargaPIN), 0, 1023, 0, 5); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+voltajeCarg+
+a = (doubleMap(analogRead(cargaPIN), 0, 1023, 0, 5)+ajusteVolt); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+if (voltajeCarga<0) {
+  voltajeCarga=0.9;
+}
 
-Serial.print(value);
-Serial.println("V");
-delay(100);
+//Serial.print(voltaje); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
+//Serial.println("V");
+//delay(50);
 
 //Si había voltaje antes y ya no, apagamos LEDS
-if (voltajePrevio and value<=1) {
+if (voltajePrevio & voltaje<=1) {
   for (int thisLed = 0; thisLed > ledCont; thisLed++) {
   digitalWrite(ledPins[thisLed], LOW);
   }
@@ -205,10 +215,10 @@ if (voltajePrevio and value<=1) {
 
 //Establecemos el número de elementos a iluminar
 ledLevel=0;
-if (value>1) {
+if (voltaje>1) {
   voltajePrevio=true;
   for (int thisLed = 0; thisLed < ledCont; thisLed++) {
-    if (value>mVoltCarga[thisLed]) {
+    if (voltaje>mVoltCarga[thisLed]) {
       ledLevel=thisLed+1;
     }
   }
@@ -236,7 +246,7 @@ if (ledLevel==1) {
 }
 
 //Si no se detecta voltaje, encendemos secuencialmente todos
-if (value<1) {
+if (voltaje<1) {
   if (posLed<10) {
     digitalWrite(ledPins[posLed], HIGH);
     delay(1000);
@@ -250,7 +260,7 @@ if (value<1) {
 
 ////Si se está cargando, encendemos los apagados
 ////Mientras esté cargando, del lado previo al diodo tendremos voltaje más alto (el diodo tiene cierta resistencia).
-//if (voltajeCarga>value) {
+//if (voltajeCarga>voltaje) {
 //for (int thisLed = ledLevel; thisLed < ledCont; thisLed++) {
 //  digitalWrite(ledPins[thisLed], HIGH);
 //  delay(200);
@@ -272,17 +282,17 @@ if ((millis()-millisInicio)>3600000) { //Ha pasado una hora
   //Horas funcionamiento Arduino (batería activada)
   EEPROM.update(0,EEPROM.readLong(0)+1); //Añadimos una hora al contador 
   //Contador de horas recargando baterías (servirá para sacar las recargas totales)
-  if (voltajeCarga>value) {
+  if (voltajeCarga>voltaje) {
     EEPROM.update(7,EEPROM.readLong(7)+1); //Añadimos una hora al contador 
   }
-  if (value>1) { //Sólo si tenemos un valor válido
+  if (voltaje>1) { //Sólo si tenemos un valor válido
     //Voltaje máximo histórico
-    if (EEPROM.readLong(15)<value) { //Comprobamos valor máximo y actualizamos
-      EEPROM.update(15,value);
+    if (EEPROM.readLong(15)<voltaje) { //Comprobamos valor máximo y actualizamos
+      EEPROM.update(15,voltaje);
     }
     //Voltaje mínimo histórico
-    if (EEPROM.readLong(19)>value)  { //Comprobamos valor mínimo y actualizamos
-      EEPROM.update(19,value);
+    if (EEPROM.readLong(19)>voltaje)  { //Comprobamos valor mínimo y actualizamos
+      EEPROM.update(19,voltaje);
     }
   }
   //De la posición EEPROM 50 a 90 contabilizamos horas en cada porcentaje de carga
