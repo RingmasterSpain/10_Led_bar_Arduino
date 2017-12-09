@@ -7,6 +7,8 @@
   Azul sobrecarga, Verde 50-90%, amarillo del 20 al 40%,
   rojo 10 al 20% y rojo parpadeante por debajo del 5%
 
+  Se utiliza divisor de voltaje con resistencias de 1M y 100K, recomendado condensador
+  https://www.diarioelectronicohoy.com/blog/voltimetro-digital-con-arduino
   Hay que tener en cuenta que el ADC de Arduino es de 10 bits, por lo que sólo detecta
   cambios de voltaje (con un divisor de hasta 55V) de más de 0,054V
 
@@ -22,7 +24,7 @@
   Autor: David Losada, basado en trabajos previos de otros autores:
   Parte de código de la referencia rápida del Digispark: http://digistump.com/wiki/digispark/quickref
     
-  Version: 0.5 bajo licencia GPLv3
+  Version: 0.7 bajo licencia GPLv3
   Fecha: noviembre 2017
   Proyecto Kid's car kit Bilbao
 
@@ -52,7 +54,7 @@
 const double mVoltCarga[10]={1,3.139,3.194,3.216,3.224,3.227,3.249,3.263,3.282,3.38}; //tabla de relación de voltajes y carga de LIFEPO celda HTCF26650
 
 //Hay que calibrarlo porque las resistencias del divisor de voltaje no son exactas, ni siquiera la referencia interna del Arduino (que dependerá del regulador de voltaje)
-const double ajusteVolt=-0.23; //IMPORTANTE Aquí se calibra el valor del voltaje que obtenemos por el Arduino, sumando o restando valor
+const double ajusteVolt=0.07; //IMPORTANTE Aquí se calibra el valor del voltaje que obtenemos por el Arduino, sumando o restando valor
 
 const double delayMotor=10; //Indicamos tiempo en segundos para aceleración completa motor
 double PWMMin = 0; //PWM de funcionamiento de arrancada mínima
@@ -83,6 +85,7 @@ int ledPins[] = {
 #define bateriaPIN     A1 //Entrada de voltaje con divisor
 #define cargaPIN       A2 //Entrada de voltaje con divisor del punto de carga
 const int ledCont = 10;   //Número de Leds de la barra
+const int celdas = 10; // Número de celdas de la batería (para dividir voltaje)
 
 //*************************************************************************************
 
@@ -229,7 +232,7 @@ analogWrite(motorPWM,powerMotor);
 //Serial.println("Leemos valores");
 for (int x = 0; x < 3; x++) {
   //coge el voltaje en milivoltios, pasamos a voltios con la rutina doubleMap
-  voltajeMuestras[x] = doubleMap(analogRead(bateriaPIN), 0, 1023, 0, 5); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+  voltajeMuestras[x] = doubleMap(analogRead(bateriaPIN), 0, 1023, 0, 55); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
   delay(15); // espera entre lecturas
 }
 //Ordenamos para descartar bajo y alto y eliminar posibles errores; un condensador lo estabiliza bastante
@@ -244,9 +247,9 @@ for (int x = 0; x < 3; x++) {
 }
 
 //Obtenemos voltaje en mV (milliVoltios)
-voltaje = ((double)voltajeMuestras[1]+ajusteVolt);
+voltaje = (((double)voltajeMuestras[1])/celdas)+ajusteVolt;
 if (voltaje<0) {
-  voltaje=0.9;
+  voltaje=0;
   }
 if (voltajePrevio==0) {
   voltajePrevio=voltaje;
@@ -262,17 +265,17 @@ else { //Nos aseguramos de que vaya por tramos de 0,003 para que no oscilen los 
 //voltaje = 3.21; //for debugging
 
 //Voltaje de carga
-voltajeCarga = (doubleMap(analogRead(cargaPIN), 0, 1023, 0, 5)+ajusteVolt); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+voltajeCarga = ((doubleMap(analogRead(cargaPIN), 0, 1023, 0, 55)/celdas)+ajusteVolt); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
 if (voltajeCarga<0) {
-  voltajeCarga=0.9;
+  voltajeCarga=0;
 }
 
 ////Debugging
-//Serial.print(voltaje); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
-//Serial.println("V voltaje");
-//Serial.print(voltajeCarga); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
-//Serial.println("V carga");
-//delay(500);
+Serial.print(voltaje); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
+Serial.println("V voltaje");
+Serial.print(voltajeCarga); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
+Serial.println("V carga");
+delay(500);
 
 //Establecemos el número de elementos a iluminar
 ledLevel=0;
@@ -324,7 +327,7 @@ if (ledLevel==1) {
 
 //Si se está cargando, encendemos los apagados
 //Mientras esté cargando, del lado previo al diodo tendremos voltaje más alto (el diodo tiene cierta resistencia).
-if (voltajeCarga>voltaje) {
+if (voltajeCarga>voltaje and voltaje>1) {
   if (cargando) {
     if ((millis()-millisCarga)>800) {
       millisCarga=millis(); //Reseteamos
@@ -348,8 +351,8 @@ else {
 }
 
 //Si no se detecta voltaje, vamos encendiendo secuencialmente todos
-if (voltaje<1) {
-  if (posLed<=10) {
+if (voltaje<=1) {
+  if (posLed<11) {
     if ((millis()-millisSeg)>800) {
         millisSeg=millis(); //Reseteamos temporizador parpadeo
         digitalWrite(ledPins[posLed], HIGH);
