@@ -24,7 +24,7 @@
   Autor: David Losada, basado en trabajos previos de otros autores:
   Parte de código de la referencia rápida del Digispark: http://digistump.com/wiki/digispark/quickref
     
-  Version: 0.7 bajo licencia GPLv3
+  Version: 0.8 bajo licencia GPLv3
   Fecha: noviembre 2017
   Proyecto Kid's car kit Bilbao
 
@@ -42,22 +42,21 @@
 
 //******************* A CAMBIAR SEGÚN TU CONFIGURACIÓN ********************************
 
-//Relación de voltaje y estado de carga de la batería; se puede agregar para cualquier tipo de batería, siempre teniendo en cuenta que estaremos comprobando sólo una celda de hasta 5V
-//por lo que es imprescindible utilizar un BMS de equilibrado de celdas en la carga para evitar problemas con las celdas no monitorizadas
+//Relación de voltaje y estado de carga de la batería; se puede utilizar para cualquier tipo de batería de hasta 50V máximo
 //Descomentamos el tipo de batería que queramos utilizar
-//(VALORES %: 1%,10%,20%,30%,40%,90%,100%)
-//const double mVoltCarga[7]={2.8,3.10,3.17,3.198,3.22,3.4,3.6}; //tabla de relación de voltajes y carga de LIFEPO  (recomendado calibrar (más abajo se indica), por la pequeña diferencia entre estados)
-//const double mVoltCarga[7]={3,3.2,3.3,3.6,3.65,4.05,4.2}; //tabla de relación de voltajes y carga de LiCo y LiPo
-
 //(VALORES BARRA 10 LEDS %: 0%,15%,30%,40%,50%,60%,70%,80%,90%,100%) ; no es progresivo, sobre todo en LiFePo4, por eso la conveniencia de valores según porcentajes.
+//const double mVoltCarga[10]={2,3.2,3.3,3.4,3.45,3.5,3.8,3.9,4.1,4.2}; //tabla de relación de voltajes y carga de LiCo y LiPo
 //const double mVoltCarga[10]={1,3.16,3.198,3.216,3.237,3.24,3.25,3.27,3.283,3.4}; //tabla de relación de voltajes y carga de LIFEPO  (recomendado calibrar (más abajo se indica), por la pequeña diferencia entre estados)
-const double mVoltCarga[10]={1,3.139,3.194,3.216,3.224,3.227,3.249,3.263,3.282,3.38}; //tabla de relación de voltajes y carga de LIFEPO celda HTCF26650
+const double mVoltCarga[10]={1,3.14,3.19,3.21,3.23,3.24,3.26,3.28,3.33,3.5}; //tabla de relación de voltajes y carga de LIFEPO celda HTCF26650
+//const double mVoltCarga[10]={1,3.139,3.194,3.216,3.224,3.227,3.249,3.263,3.282,3.38}; //tabla de relación de voltajes y carga de LIFEPO celda HTCF26650
+const int celdas = 10; // Número de celdas de la batería (para dividir voltaje)
 
 //Hay que calibrarlo porque las resistencias del divisor de voltaje no son exactas, ni siquiera la referencia interna del Arduino (que dependerá del regulador de voltaje)
-const double ajusteVolt=0.07; //IMPORTANTE Aquí se calibra el valor del voltaje que obtenemos por el Arduino, sumando o restando valor
+const double ajusteVolt=0.04; //IMPORTANTE Aquí se calibra el valor del voltaje que obtenemos por el Arduino, sumando o restando valor
+const double Delta=0.05; //Voltaje que se imcrementa al poner a cargar, depende de los Ah que tenga el cargador, valor aproximado.
 
-const double delayMotor=10; //Indicamos tiempo en segundos para aceleración completa motor
-double PWMMin = 0; //PWM de funcionamiento de arrancada mínima
+const double delayMotor=2; //Indicamos tiempo en segundos para aceleración completa motor
+double PWMMin = 70; //PWM de funcionamiento de arrancada mínima
 double PWMMax = 255; //PWM de funcionamiento al máximo de motor
 
 //Definición pines 
@@ -85,7 +84,6 @@ int ledPins[] = {
 #define bateriaPIN     A1 //Entrada de voltaje con divisor
 #define cargaPIN       A2 //Entrada de voltaje con divisor del punto de carga
 const int ledCont = 10;   //Número de Leds de la barra
-const int celdas = 10; // Número de celdas de la batería (para dividir voltaje)
 
 //*************************************************************************************
 
@@ -97,6 +95,7 @@ unsigned long millisInicio; //Para comprobar paso de horas
 unsigned long millisMotor; //Para comprobar tiempo desde que hemos activado el motor
 unsigned long millisSeg; //Para controlar tiempos en tres estados no simultáneos; con batería y cargando, sin conectar, y sin batería parpadeando rojo.
 unsigned long millisCarga; //Para controlar tiempos durante la recarga.
+unsigned long millisRefresh; //Para ejecutar la parte del LED 10 segmentos sólo cada X milisegundos
 
 boolean pulsPrevia=false; //Comprobar si estaba motor activado de antes
 double powerMotor; //Valor PWM a activar el motor
@@ -114,15 +113,16 @@ double voltajeCarga=0; //Valor de voltaje de carga
 
 void setup()   { 
 
+Serial.begin(9600);
 //Resetea la EEPROM la primera vez que la usamos
 EEPROM.setMemPool(0,512); //Establecemos inicio y tamaño de EEPROM de la tarjeta utilizada
-EEPROM.setMaxAllowedWrites(128); //Mínimo para que pueda hacerse el primer borrado completo
+EEPROM.setMaxAllowedWrites(1024); //Mínimo para que pueda hacerse el primer borrado completo
 //rellenamos de 0 los datos de EEPROM
 if (EEPROM.readLong(508)!=7091976) { //En ese punto, preferiblemente al final, guardo un valor para saber si ya la he reseteado
-  for(int i=0; i<500; i=i+4) { //Ajustar el valor según el tamaño de la (EEPROM)-8
-     EEPROM.update(i,0);
+  for(int i=0; i<508; i=i+4) { //Ajustar el valor según el tamaño de la (EEPROM)-8
+     EEPROM.writeLong(i,0);
       }
-  EEPROM.update(508,7091976); //Almacenamos un número indicativo de que ya se ha inicializado en la última posición
+  EEPROM.writeLong(508,7091976); //Almacenamos un número indicativo de que ya se ha inicializado en la última posición
   Serial.println("Borrado de EEPROM terminado"); //sólo debería aparecer 1 vez
 }
 
@@ -154,7 +154,10 @@ EEPROM.update(11,EEPROM.readLong(11)+1);
   // 1      0      0      0      4.0 s
   // 1      0      0      1      8.0 s
 
-  WDTCSR = 1 << WDP2 | 1 << WDP1; /* 1.0 seconds */
+  //WDTCSR = 1 << WDP1 | 1 << WDP0; /* 0.125 seconds */
+  //WDTCSR = 1 << WDP2; /* 0.25 seconds */
+  WDTCSR = 1 << WDP2 | 1 << WDP0; /* 0.5 seconds */
+  //WDTCSR = 1 << WDP2 | 1 << WDP1; /* 1.0 seconds */
   //WDTCSR = 1<<WDP2 | 1<<WDP1 | 1<<WDP0; /* 2.0 seconds */
   //WDTCSR = 1<<WDP3; /* 4.0 seconds */
   //WDTCSR = 1<<WDP0 | 1<<WDP3; /* 8.0 seconds */
@@ -186,13 +189,26 @@ for (int thisLed = 0; thisLed < ledCont; thisLed++) {
   delay(100);
   }
 //Apaga todos
-for (int thisLed = 10; thisLed > 0; thisLed--) {
+for (int thisLed = 10; thisLed >= 0; thisLed--) {
   digitalWrite(ledPins[thisLed], LOW);
   delay(100);
   }
 
-Serial.begin(9600);
 Serial.println("Iniciamos programa");
+//Pasamos por el Serial los datos almacenados hasta ahora
+Serial.print("Número de veces encendido:");
+Serial.println(EEPROM.readLong(11));
+Serial.print("Contador horas encendido:");
+Serial.println(EEPROM.readLong(0)/2);
+Serial.print("Horas recargando baterías:");
+Serial.println(EEPROM.readLong(7)/2);
+Serial.print("Recargas completas aproximadas (cargador 6,5Ah):");
+Serial.println(((EEPROM.readLong(7))/2)/4);
+Serial.print("Voltaje máximo histórico:");
+Serial.println(EEPROM.readLong(15));
+Serial.print("Voltaje mínimo histórico:");
+Serial.println(EEPROM.readLong(19));
+Serial.println("Copyright Ringmaster 2018");
 
 }
 
@@ -227,173 +243,182 @@ analogWrite(motorPWM,powerMotor);
 
 //Serial.println(powerMotor);
 
-// CÓDIGO OBTENCIÓN VOLTAJE **************************
-//Recoge 3 muestras de voltaje batería para sacar medias
-//Serial.println("Leemos valores");
-for (int x = 0; x < 3; x++) {
-  //coge el voltaje en milivoltios, pasamos a voltios con la rutina doubleMap
-  voltajeMuestras[x] = doubleMap(analogRead(bateriaPIN), 0, 1023, 0, 55); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
-  delay(15); // espera entre lecturas
-}
-//Ordenamos para descartar bajo y alto y eliminar posibles errores; un condensador lo estabiliza bastante
-for (int x = 0; x < 3; x++) {
-  for (int y = 0; y < 3; y++) {
-    if (voltajeMuestras[y] < voltajeMuestras[y + 1]) {
-      voltaje = voltajeMuestras[y];
-      voltajeMuestras[y] = voltajeMuestras[y + 1];
-      voltajeMuestras[y + 1] = voltaje;
+//Esta parte la ejecutamos sólo cada 300 milisegundos; suficiente para hacer parpadear si está al mínimo, así optimizamos
+if ((millis()-millisRefresh)>300) {//Cada x ms cambiamos estado LED
+    millisRefresh=millis(); //Reseteamos temporizador parpadeo
+      
+  // CÓDIGO OBTENCIÓN VOLTAJE **************************
+  //Recoge 3 muestras de voltaje batería para sacar medias
+  //Serial.println("Leemos valores");
+  for (int x = 0; x < 3; x++) {
+    //coge el voltaje en milivoltios, pasamos a voltios con la rutina doubleMap
+    voltajeMuestras[x] = doubleMap(analogRead(bateriaPIN), 0, 1023, 0, 55); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+    delay(15); // espera entre lecturas
+  }
+  //Ordenamos para descartar bajo y alto y eliminar posibles errores; un condensador lo estabiliza bastante
+  for (int x = 0; x < 3; x++) {
+    for (int y = 0; y < 3; y++) {
+      if (voltajeMuestras[y] < voltajeMuestras[y + 1]) {
+        voltaje = voltajeMuestras[y];
+        voltajeMuestras[y] = voltajeMuestras[y + 1];
+        voltajeMuestras[y + 1] = voltaje;
+      }
     }
   }
-}
-
-//Obtenemos voltaje en mV (milliVoltios)
-voltaje = (((double)voltajeMuestras[1])/celdas)+ajusteVolt;
-if (voltaje<0) {
-  voltaje=0;
-  }
-if (voltajePrevio==0) {
-  voltajePrevio=voltaje;
-}
-else { //Nos aseguramos de que vaya por tramos de 0,003 para que no oscilen los LED
-  if (abs(voltaje-voltajePrevio)<0.003 and abs(voltaje-voltajePrevio)>0) {
-    voltaje=voltajePrevio;
-  }
-  else {
+  
+  //Obtenemos voltaje en mV (milliVoltios)
+  voltaje = (((double)voltajeMuestras[1])/celdas)+ajusteVolt;
+  if (voltaje<0) {
+    voltaje=0;
+    }
+  if (voltajePrevio==0) {
     voltajePrevio=voltaje;
   }
-}
-//voltaje = 3.21; //for debugging
-
-//Voltaje de carga
-voltajeCarga = ((doubleMap(analogRead(cargaPIN), 0, 1023, 0, 55)/celdas)+ajusteVolt); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
-if (voltajeCarga<0) {
-  voltajeCarga=0;
-}
-
-////Debugging
-Serial.print(voltaje); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
-Serial.println("V voltaje");
-Serial.print(voltajeCarga); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
-Serial.println("V carga");
-delay(500);
-
-//Establecemos el número de elementos a iluminar
-ledLevel=0;
-if (voltaje>1) {
-  for (int thisLed = 0; thisLed < ledCont; thisLed++) {
-    if (voltaje>mVoltCarga[thisLed]) {
-      ledLevel=thisLed+1;
+  else { //Nos aseguramos de que vaya por tramos de 0,006 para que no oscilen los LED
+    if (abs(voltaje-voltajePrevio)<0.006 and abs(voltaje-voltajePrevio)>0) {
+      voltaje=voltajePrevio;
+    }
+    else {
+      voltajePrevio=voltaje;
     }
   }
-}
-
-// Encendemos los LED correspondientes
-for (int thisLed = 0; thisLed < ledCont; thisLed++) {
-  // Si el índice del array es menor o igual que el número de leds a encender,
-  // ponemos el pin de ese elemento en ON:
-  if (thisLed < ledLevel) { 
-    if (ledLevel>1) { //sólo activamos el primero si encendemos más de un led 
-      digitalWrite(ledPins[thisLed], HIGH);
-      if (ledLevel==2) {
-        digitalWrite(ledPins[0], HIGH); //(Del primero se encarga el bloque de parpadeo)
+  //En caso de estar cargando, le quitamos la subida para representar lo real
+  if (cargando) {
+    voltaje=voltaje-Delta;
+  }
+  //voltaje = 3.21; //for debugging
+  
+  //Voltaje de carga
+  voltajeCarga = ((doubleMap(analogRead(cargaPIN), 0, 1023, 0, 55)/celdas)+ajusteVolt); //Pasamos los valores de entre 0 a 1023 a valores entre 0 y 5V
+  if (voltajeCarga<0) {
+    voltajeCarga=0;
+  }
+  
+  //Debugging
+//  Serial.print(voltaje); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
+//  Serial.println("V voltaje");
+//  Serial.print(voltajeCarga); //curiosamente estas líneas hacen que se resetee el arduino aleatoriamente...
+//  Serial.println("V carga");
+//  delay(500);
+  
+  //Establecemos el número de elementos a iluminar cada segundo
+  ledLevel=0;
+  if (voltaje>1) {
+    for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+      if (voltaje>mVoltCarga[thisLed]) {
+        ledLevel=thisLed+1;
       }
     }
   }
-  // apagamos los led por encima de ése:
-  else {
-    if (voltajeCarga<voltaje) { //sólo si no se está cargando
-      digitalWrite(ledPins[thisLed], LOW);
+  
+  // Encendemos los LED correspondientes
+  for (int thisLed = 0; thisLed < ledCont; thisLed++) {
+    // Si el índice del array es menor o igual que el número de leds a encender,
+    // ponemos el pin de ese elemento en ON:
+    if (thisLed < ledLevel) { 
+      if (ledLevel>1) { //sólo activamos el primero si encendemos más de un led 
+        digitalWrite(ledPins[thisLed], HIGH);
+        if (ledLevel==2) {
+          digitalWrite(ledPins[0], HIGH); //(Del primero se encarga el bloque de parpadeo)
+        }
+      }
+    }
+    // apagamos los led por encima de ése:
+    else {
+      if (voltajeCarga<voltaje) { //sólo si no se está cargando
+        digitalWrite(ledPins[thisLed], LOW);
+        }
+        else {
+          exit;
+        }
+    }
+  }
+  
+  ////Si sólo está encendido el primer rojo (5%) lo hacemos parpadear
+  if (ledLevel==1) {
+    if ((millis()-millisSeg)>400) {//Cada x ms cambiamos estado LED
+      millisSeg=millis(); //Reseteamos temporizador parpadeo
+      if (ledEncendido) {
+        digitalWrite(ledPins[0], LOW);
+        ledEncendido=false;
       }
       else {
-        exit;
-      }
-  }
-}
-
-////Si sólo está encendido el primer rojo (5%) lo hacemos parpadear
-if (ledLevel==1) {
-  if ((millis()-millisSeg)>400) {//Cada x ms cambiamos estado LED
-    millisSeg=millis(); //Reseteamos temporizador parpadeo
-    if (ledEncendido) {
-      digitalWrite(ledPins[0], LOW);
-      ledEncendido=false;
-    }
-    else {
-      digitalWrite(ledPins[0], HIGH);
-      ledEncendido=true;
-    }
-  }
-}
-
-//Si se está cargando, encendemos los apagados
-//Mientras esté cargando, del lado previo al diodo tendremos voltaje más alto (el diodo tiene cierta resistencia).
-if (voltajeCarga>voltaje and voltaje>1) {
-  if (cargando) {
-    if ((millis()-millisCarga)>800) {
-      millisCarga=millis(); //Reseteamos
-      digitalWrite(ledPins[posLed], HIGH);
-      posLed++;
-      if (posLed>10) {
-        posLed=thisLed+1; //Empezamos donde termina el indicador de voltaje
-        for (int thisLed = ledLevel; thisLed < ledCont; thisLed++) { //APAGAMOS de nuevo todos
-          digitalWrite(ledPins[thisLed], LOW); 
-        }
+        digitalWrite(ledPins[0], HIGH);
+        ledEncendido=true;
       }
     }
   }
-    else {
-      cargando=true;
-      posLed=thisLed+1;
-    }
-} 
-else {
-  cargando=false;
-}
-
-//Si no se detecta voltaje, vamos encendiendo secuencialmente todos
-if (voltaje<=1) {
-  if (posLed<11) {
-    if ((millis()-millisSeg)>800) {
-        millisSeg=millis(); //Reseteamos temporizador parpadeo
-        digitalWrite(ledPins[posLed], HIGH);
-        if (posLed>0) {
-          digitalWrite(ledPins[posLed-1], LOW);
-          }
-        posLed++;
-        }
-  }
-}
-if (posLed>10) {
-  posLed=0;
-}
   
-//Comprobamos si millis se ha desbordado (tras 50 días encendido)
-if (millisInicio>millis()) {
-  millisInicio=millis();
-}
+  //Si se está cargando, encendemos alternativamente los leds apagados
+  if (voltajeCarga>(voltaje+Delta+0.05)) { //Mínimo para considerar que está cargando; 0.05 para evitar falsos positivos
+    if (cargando) {
+      if ((millis()-millisCarga)>800) {
+        millisCarga=millis(); //Reseteamos
+        digitalWrite(ledPins[posLed], HIGH);
+        posLed++;
+        if (posLed>10) {
+          posLed=ledLevel; //Empezamos donde termina el indicador de voltaje
+          for (int thisLed = ledLevel; thisLed < ledCont; thisLed++) { //APAGAMOS de nuevo todos
+            digitalWrite(ledPins[thisLed], LOW); 
+          }
+        }
+      }
+    }
+      else {
+        cargando=true;
+        posLed=ledLevel;
+      }
+  } 
+  else {
+    cargando=false;
+  }
+  
+  //Si no se detecta voltaje pero estamos cargando (ya que está alimentado), vamos encendiendo secuencialmente todos
+  if (voltaje<=1) {
+    if (posLed<11) {
+      if ((millis()-millisSeg)>800) {
+          millisSeg=millis(); //Reseteamos temporizador parpadeo
+          digitalWrite(ledPins[posLed], HIGH);
+          if (posLed>0) {
+            digitalWrite(ledPins[posLed-1], LOW);
+            }
+          posLed++;
+          }
+    }
+  }
+  if (posLed>10) {
+    posLed=0;
+  }
+    
+  //Comprobamos si millis se ha desbordado (tras 50 días encendido)
+  if (millisInicio>millis()) {
+    millisInicio=millis();
+  }
+  
+  //Guardamos datos estadísticos de uso de la batería en EEPROM
+  if ((millis()-millisInicio)>1800000) { //Ha pasado media hora; no se actualiza más a menudo porque cada byte EEPROM sólo admite 100.000 usos
+    millisInicio=millis(); //Reseteamos contador
+    //Medias horas funcionamiento Arduino (batería activada)
+    EEPROM.update(0,EEPROM.readLong(0)+1); //Añadimos media hora al contador 
+    //Contador de minutos recargando baterías (servirá para sacar las recargas totales)
+    if (voltajeCarga>(voltaje+Delta+0.05)) {
+      EEPROM.update(7,EEPROM.readLong(7)+1); //Añadimos media hora al contador
+    }
+    if (voltaje>1) { //Sólo si tenemos un valor válido
+      //Voltaje máximo histórico
+      if (EEPROM.readLong(15)<voltaje) { //Comprobamos valor máximo y actualizamos
+        EEPROM.update(15,voltaje);
+      }
+      //Voltaje mínimo histórico
+      if (EEPROM.readLong(19)>voltaje)  { //Comprobamos valor mínimo y actualizamos
+        EEPROM.update(19,voltaje);
+      }
+    }
+    //De la posición EEPROM 50 a 90 contabilizamos medias horas en cada porcentaje de carga
+    EEPROM.update(50+(ledLevel*4),EEPROM.readLong(50+(ledLevel*4)));
+  }
 
-//Guardamos datos estadísticos de uso de la batería en EEPROM
-if ((millis()-millisInicio)>3600000) { //Ha pasado una hora
-  millisInicio=millis(); //Reseteamos contador
-  //Horas funcionamiento Arduino (batería activada)
-  EEPROM.update(0,EEPROM.readLong(0)+1); //Añadimos una hora al contador 
-  //Contador de horas recargando baterías (servirá para sacar las recargas totales)
-  if (voltajeCarga>voltaje) {
-    EEPROM.update(7,EEPROM.readLong(7)+1); //Añadimos una hora al contador 
-  }
-  if (voltaje>1) { //Sólo si tenemos un valor válido
-    //Voltaje máximo histórico
-    if (EEPROM.readLong(15)<voltaje) { //Comprobamos valor máximo y actualizamos
-      EEPROM.update(15,voltaje);
-    }
-    //Voltaje mínimo histórico
-    if (EEPROM.readLong(19)>voltaje)  { //Comprobamos valor mínimo y actualizamos
-      EEPROM.update(19,voltaje);
-    }
-  }
-  //De la posición EEPROM 50 a 90 contabilizamos horas en cada porcentaje de carga
-  EEPROM.update(50+(ledLevel*4),EEPROM.readLong(50+(ledLevel*4)));
-}
+} //Cierre de parte ejecutada cada 300 milisegundos (optimización de código)
 
 //enterSleep(); //Paramos 1 seg.; ahorramos batería ya que está el 99% del tiempo "dormido"
 //Anulado; Necesitamos que se ejecute de seguido para tener baja latencia de respuesta
